@@ -76,6 +76,7 @@ jobs:
 
           # winget NO existe en los runners de GitHub (Windows Server), usamos chocolatey
           choco install vscode -y --no-progress
+          choco install github-desktop -y --no-progress
 
       - name: Restaurar archivos desde Google Drive
         env:
@@ -114,7 +115,7 @@ jobs:
           Restore "VSCode_User"     "$p\AppData\Roaming\Code\User"
           Restore "Desktop"         "$p\Desktop"
           Restore "Documents"       "$p\Documents"
-
+          Restore "GitHubDesktop_Roaming" "$p\AppData\Roaming\GitHub Desktop"
           icacls "$p" /grant "RDP:(OI)(CI)F" /T /Q
 
           Write-Host "=== Desktop restaurado ==="
@@ -183,6 +184,7 @@ jobs:
             $rc = "C:\rclone\rclone.exe"
             $c  = "--config", "C:\rclone.conf"
             try {
+              & $rc copy "$p\AppData\Roaming\GitHub Desktop" "gdrive:Backup_GitHub_PC/GitHubDesktop_Roaming" @c --transfers 4 --exclude "Cache/**" --exclude "Code Cache/**" --exclude "GPUCache/**" --exclude "*.lock"
               & $rc copy "$p\Desktop"   "gdrive:Backup_GitHub_PC/Desktop"      @c --max-size 100M --transfers 4
               & $rc copy "$p\Documents" "gdrive:Backup_GitHub_PC/Documents"    @c --max-size 100M --transfers 4
               & $rc copy "$p\AppData\Roaming\Code\User" "gdrive:Backup_GitHub_PC/VSCode_User" @c --transfers 4
