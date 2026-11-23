@@ -15,7 +15,7 @@ jobs:
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" -ErrorAction SilentlyContinue
           netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
 
@@ -35,57 +35,112 @@ jobs:
           $rawPassword += $charSet.Special | Get-Random -Count 4
           $password = -join ($rawPassword | Sort-Object { Get-Random })
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue
+          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue
           
           echo "RDP_CREDS=User: RDP | Password: $password" >> $env:GITHUB_ENV
+          Write-Host "Usuario RDP creado"
 
-      - name: Instalar VS Code y Rclone
+      - name: Instalar rclone + VS Code
         run: |
-          choco install rclone -y
-          winget install --id Microsoft.VisualStudioCode -e --accept-source-agreements --accept-package-agreements
+          # Instalar rclone (método confiable)
+          $rcloneDir = "C:\rclone"
+          New-Item -ItemType Directory -Path $rcloneDir -Force | Out-Null
+          
+          $url = "https://downloads.rclone.org/rclone-current-windows-amd64.zip"
+          $zip = "$env:TEMP\rclone.zip"
+          
+          Write-Host "Descargando rclone..."
+          Invoke-WebRequest -Uri $url -OutFile $zip
+          Expand-Archive -Path $zip -DestinationPath "$env:TEMP\rclone-extract" -Force
+          
+          $extracted = Get-ChildItem "$env:TEMP\rclone-extract" -Directory | Select-Object -First 1
+          Copy-Item "$($extracted.FullName)\rclone.exe" -Destination "$rcloneDir\rclone.exe" -Force
+          
+          # Agregar al PATH del sistema
+          $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+          if ($machinePath -notlike "*C:\rclone*") {
+            [Environment]::SetEnvironmentVariable("Path", "$machinePath;C:\rclone", "Machine")
+          }
+          
+          $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+          
+          Write-Host "rclone instalado:"
+          & "C:\rclone\rclone.exe" version
+          
+          # Instalar VS Code
+          Write-Host "Instalando VS Code..."
+          winget install --id Microsoft.VisualStudioCode -e --accept-source-agreements --accept-package-agreements --silent --disable-interactivity
 
-      - name: Restaurar sesiones, extensiones y proyectos en usuario RDP
+      - name: Restaurar archivos desde Google Drive
         env:
           RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG }}
         run: |
-          Set-Content -Path "C:\rclone.conf" -Value $env:RCLONE_CONFIG_DATA
+          if ([string]::IsNullOrEmpty($env:RCLONE_CONFIG_DATA)) {
+            Write-Error "El secret RCLONE_CONFIG está vacío"
+            exit 1
+          }
+          
+          Set-Content -Path "C:\rclone.conf" -Value $env:RCLONE_CONFIG_DATA -Encoding UTF8
+          Write-Host "Config de rclone creado"
           
           $rdpProfile = "C:\Users\RDP"
-          New-Item -ItemType Directory -Path "$rdpProfile\AppData\Roaming\Mozilla\Firefox" -Force
-          New-Item -ItemType Directory -Path "$rdpProfile\AppData\Roaming\Code\User" -Force
-          New-Item -ItemType Directory -Path "$rdpProfile\Desktop" -Force
-          New-Item -ItemType Directory -Path "$rdpProfile\Documents" -Force
-
-          # Descargar desde Google Drive usando explícitamente C:\rclone.conf
-          rclone copy gdrive:Backup_GitHub_PC/Firefox_Roaming "$rdpProfile\AppData\Roaming\Mozilla\Firefox" --config "C:\rclone.conf" --create-empty-src-dirs -v
-          rclone copy gdrive:Backup_GitHub_PC/VSCode_User "$rdpProfile\AppData\Roaming\Code\User" --config "C:\rclone.conf" --create-empty-src-dirs -v
-          rclone copy gdrive:Backup_GitHub_PC/Desktop "$rdpProfile\Desktop" --config "C:\rclone.conf" --create-empty-src-dirs -v
-          rclone copy gdrive:Backup_GitHub_PC/Documents "$rdpProfile\Documents" --config "C:\rclone.conf" --create-empty-src-dirs -v
-
-          # Dar control total al usuario RDP sobre su carpeta
+          
+          $folders = @(
+            "$rdpProfile\AppData\Roaming\Mozilla\Firefox",
+            "$rdpProfile\AppData\Roaming\Code\User",
+            "$rdpProfile\Desktop",
+            "$rdpProfile\Documents",
+            "$rdpProfile\.vscode\extensions"
+          )
+          
+          foreach ($folder in $folders) {
+            New-Item -ItemType Directory -Path $folder -Force | Out-Null
+          }
+          
+          Write-Host "Iniciando restauración desde Google Drive..."
+          
+          & "C:\rclone\rclone.exe" copy "gdrive:Backup_GitHub_PC/Firefox_Roaming" "$rdpProfile\AppData\Roaming\Mozilla\Firefox" --config "C:\rclone.conf" --create-empty-src-dirs -v --transfers 8
+          & "C:\rclone\rclone.exe" copy "gdrive:Backup_GitHub_PC/VSCode_User" "$rdpProfile\AppData\Roaming\Code\User" --config "C:\rclone.conf" --create-empty-src-dirs -v --transfers 8
+          & "C:\rclone\rclone.exe" copy "gdrive:Backup_GitHub_PC/Desktop" "$rdpProfile\Desktop" --config "C:\rclone.conf" --create-empty-src-dirs -v --transfers 8
+          & "C:\rclone\rclone.exe" copy "gdrive:Backup_GitHub_PC/Documents" "$rdpProfile\Documents" --config "C:\rclone.conf" --create-empty-src-dirs -v --transfers 8
+          
+          Write-Host "Restauración terminada"
+          
+          # Permisos al usuario RDP
           icacls "$rdpProfile" /grant "RDP:(OI)(CI)F" /T /Q
-
+          
+          # Instalar extensiones de VS Code si existe el archivo
           if (Test-Path "$rdpProfile\Desktop\vscode_extensions.txt") {
+            Write-Host "Instalando extensiones de VS Code..."
             Get-Content "$rdpProfile\Desktop\vscode_extensions.txt" | ForEach-Object {
-              & "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --extensions-dir "$rdpProfile\.vscode\extensions" --install-extension $_ --force
+              $ext = $_.Trim()
+              if ($ext) {
+                & "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --extensions-dir "$rdpProfile\.vscode\extensions" --install-extension $ext --force
+              }
             }
           }
 
-      - name: Programar guardado automatico cada 30 minutos y antes de las 6 horas
+      - name: Programar backup automático cada 30 minutos
         run: |
           $script = @'
           $rdpProfile = "C:\Users\RDP"
           while ($true) {
             Start-Sleep -Seconds 1800
-            rclone sync "$rdpProfile\Desktop" gdrive:Backup_GitHub_PC/Desktop --config "C:\rclone.conf" --max-size 100M
-            rclone sync "$rdpProfile\Documents" gdrive:Backup_GitHub_PC/Documents --config "C:\rclone.conf" --max-size 100M
-            rclone sync "$rdpProfile\AppData\Roaming\Code\User" gdrive:Backup_GitHub_PC/VSCode_User --config "C:\rclone.conf"
+            try {
+              & "C:\rclone\rclone.exe" sync "$rdpProfile\Desktop" "gdrive:Backup_GitHub_PC/Desktop" --config "C:\rclone.conf" --max-size 100M --transfers 4
+              & "C:\rclone\rclone.exe" sync "$rdpProfile\Documents" "gdrive:Backup_GitHub_PC/Documents" --config "C:\rclone.conf" --max-size 100M --transfers 4
+              & "C:\rclone\rclone.exe" sync "$rdpProfile\AppData\Roaming\Code\User" "gdrive:Backup_GitHub_PC/VSCode_User" --config "C:\rclone.conf" --transfers 4
+              Write-Host "$(Get-Date) - Backup automático realizado"
+            } catch {
+              Write-Host "$(Get-Date) - Error en backup: $_"
+            }
           }
           '@
           Set-Content -Path "C:\backup_auto.ps1" -Value $script
           Start-Process powershell -ArgumentList "-WindowStyle Hidden -File C:\backup_auto.ps1"
+          Write-Host "Backup automático iniciado"
 
       - name: Install Tailscale
         run: |
@@ -100,34 +155,35 @@ jobs:
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
           $tsIP = $null
           $retries = 0
-          while (-not $tsIP -and $retries -lt 10) {
+          while (-not $tsIP -and $retries -lt 12) {
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
-              Start-Sleep -Seconds 5
-              $retries++
+              if (-not $tsIP) { Start-Sleep -Seconds 5; $retries++ }
           }
           if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
+              Write-Error "Tailscale IP not assigned"
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+          Write-Host "Tailscale IP: $tsIP"
 
       - name: Verify RDP Accessibility
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
           if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
+              Write-Error "No se pudo conectar al puerto 3389"
               exit 1
           }
-          Write-Host "TCP connectivity successful!"
+          Write-Host "Conexión RDP lista"
 
       - name: Maintain Connection
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "`n========================================"
+          Write-Host "=== DATOS DE ACCESO RDP ==="
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
-          Write-Host "==================`n"
+          Write-Host "========================================`n"
           while ($true) {
               Write-Host "[$(Get-Date)] RDP Active"
               Start-Sleep -Seconds 300
