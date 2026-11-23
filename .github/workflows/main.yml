@@ -56,6 +56,49 @@ jobs:
               Write-Error "User creation failed"
               exit 1
           }
+      - name: Instalar VS Code y Rclone
+        run: |
+          winget install --id Microsoft.VisualStudioCode -e --accept-source-agreements --accept-package-agreements
+          winget install --id Rclone.Rclone -e --accept-source-agreements --accept-package-agreements
+
+      - name: Restaurar sesiones, extensiones y proyectos en usuario RDP
+        env:
+          RCLONE_CONFIG_DATA: ${{ secrets.RCLONE_CONFIG }}
+        run: |
+          $rdpProfile = "C:\Users\RDP"
+          mkdir "$env:APPDATA\rclone" -Force
+          Set-Content -Path "$env:APPDATA\rclone\rclone.conf" -Value $env:RCLONE_CONFIG_DATA
+          mkdir "$rdpProfile\AppData\Roaming\Mozilla\Firefox" -Force
+          mkdir "$rdpProfile\AppData\Roaming\Code\User" -Force
+          mkdir "$rdpProfile\Desktop" -Force
+          mkdir "$rdpProfile\Documents" -Force
+          rclone copy gdrive:Backup_GitHub_PC/Firefox_Roaming "$rdpProfile\AppData\Roaming\Mozilla\Firefox" --create-empty-src-dirs
+          rclone copy gdrive:Backup_GitHub_PC/VSCode_User "$rdpProfile\AppData\Roaming\Code\User" --create-empty-src-dirs
+          rclone copy gdrive:Backup_GitHub_PC/Desktop "$rdpProfile\Desktop" --create-empty-src-dirs
+          rclone copy gdrive:Backup_GitHub_PC/Documents "$rdpProfile\Documents" --create-empty-src-dirs
+          if (Test-Path "$rdpProfile\Desktop\vscode_extensions.txt") {
+            Get-Content "$rdpProfile\Desktop\vscode_extensions.txt" | ForEach-Object {
+              & "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --extensions-dir "$rdpProfile\.vscode\extensions" --install-extension $_ --force
+            }
+          }
+
+      - name: Programar guardado automatico antes de las 6 horas
+        run: |
+          $script = @'
+          Start-Sleep -Seconds 20700
+          $rdpProfile = "C:\Users\RDP"
+          & "$env:LOCALAPPDATA\Programs\Microsoft VS Code\bin\code.cmd" --extensions-dir "$rdpProfile\.vscode\extensions" --list-extensions > "$rdpProfile\Desktop\vscode_extensions.txt"
+          Stop-Process -Name "firefox" -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "Code" -Force -ErrorAction SilentlyContinue
+          Stop-Process -Name "samp-server" -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 5
+          rclone sync "$rdpProfile\AppData\Roaming\Mozilla\Firefox" gdrive:Backup_GitHub_PC/Firefox_Roaming --exclude "storage/**"
+          rclone sync "$rdpProfile\AppData\Roaming\Code\User" gdrive:Backup_GitHub_PC/VSCode_User
+          rclone sync "$rdpProfile\Desktop" gdrive:Backup_GitHub_PC/Desktop --max-size 100M
+          rclone sync "$rdpProfile\Documents" gdrive:Backup_GitHub_PC/Documents --max-size 100M
+          '@
+          Set-Content -Path "C:\backup_auto.ps1" -Value $script
+          Start-Process powershell -ArgumentList "-WindowStyle Hidden -File C:\backup_auto.ps1"
 
       - name: Install Tailscale
         run: |
